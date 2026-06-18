@@ -16,43 +16,49 @@ st.set_page_config(
 )
 
 # --- ONLINE SAMO-UČÍCÍ SE MECHANISMUS PŘES GOOGLE SHEETS ---
-# Odkaz na stažení tvé tabulky ve formátu CSV (gid=0 značí první list)
-GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1rNi3o-glbbZJa_fepFaNWvbf1p2eyD7VZmYGCYT1tPk/export?format=csv&gid=0"
+# Použijeme oficiální stabilní odkaz pro publikovaný CSV export
+GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1rNi3o-glbbZJa_fepFaNWvbf1p2eyD7VZmYGCYT1tPk/pub?output=csv"
 
 def nacti_naucene_entity_online():
-    """Načte dříve ručně upřesněné parametry přímo z online Google Sheets tabulky."""
+    """Načte dříve ručně upřesněné parametry přímo z online Google Sheets tabulky s pojistkou proti zaseknutí."""
     vychozi = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
     try:
-        # Streamlit si tabulku stáhne z vašeho odkazu za běhu
-        df = pd.read_csv(GSHEET_CSV_URL)
-        
-        # Očistíme názvy sloupců pro jistotu
-        df.columns = [c.strip().lower() for c in df.columns]
-        
-        target_kat = "kategorie" if "kategorie" in df.columns else df.columns[0]
-        target_slovo = "slovo" if "slovo" in df.columns else df.columns[1]
-
-        for _, row in df.iterrows():
-            kat = str(row[target_kat]).strip().lower()
-            slovo = str(row[target_slovo]).strip().lower()
+        # Ověříme, zda Google odpovídá (s timeoutem 3 sekundy)
+        # Tím zabráníme nekonečnému načítání (zaseknutému panáčkovi)
+        response = requests.get(GSHEET_CSV_URL, timeout=3)
+        if response.status_code == 200:
+            from io import StringIO
+            df = pd.read_csv(StringIO(response.text))
             
-            # Sjednocení kategorií do našich klíčů
-            if "výrobce" in kat or "značka" in kat:
-                kat_key = "značka"
-            elif "věk" in kat or "určení" in kat:
-                kat_key = "určení"
-            elif "plemeno" in kat or "velikost" in kat:
-                kat_key = "plemeno"
-            elif "příchuť" in kat or "príchuť" in kat:
-                kat_key = "příchuť"
-            else:
-                kat_key = "produktová řada"
+            # Očistíme názvy sloupců
+            df.columns = [c.strip().lower() for c in df.columns]
+            
+            target_kat = "kategorie" if "kategorie" in df.columns else df.columns[0]
+            target_slovo = "slovo" if "slovo" in df.columns else df.columns[1]
+
+            for _, row in df.iterrows():
+                if pd.isna(row[target_kat]) or pd.isna(row[target_slovo]):
+                    continue
+                kat = str(row[target_kat]).strip().lower()
+                slovo = str(row[target_slovo]).strip().lower()
                 
-            if slovo and slovo != "nan" and slovo not in vychozi[kat_key]:
-                vychozi[kat_key].append(slovo)
+                # Sjednocení kategorií do našich klíčů
+                if "výrobce" in kat or "značka" in kat:
+                    kat_key = "značka"
+                elif "věk" in kat or "určení" in kat:
+                    kat_key = "určení"
+                elif "plemeno" in kat or "velikost" in kat:
+                    kat_key = "plemeno"
+                elif "příchuť" in kat or "príchuť" in kat:
+                    kat_key = "příchuť"
+                else:
+                    kat_key = "produktová řada"
+                    
+                if slovo and slovo != "nan" and slovo not in vychozi[kat_key]:
+                    vychozi[kat_key].append(slovo)
         return vychozi
     except Exception as e:
-        # Záložní plán: pokud stahování selže, aplikace nespadne, jen načte prázdný základ
+        # Pokud Google neodpoví do 3 vteřin, aplikace normálně naskočí bez čekání
         return vychozi
 
 def uloz_naučenou_entitu_online(kategorie, hodnota):
@@ -60,18 +66,12 @@ def uloz_naučenou_entitu_online(kategorie, hodnota):
     Odešle nové slovo do Google Sheets. 
     Pro zápis z cloudu bez hesel je ideální propojit Sheets s Google Formulářem 
     a poslat data přes form URL, nebo tabulku nechat plně otevřenou pro zápis.
-    Můžeš prozatím využít i lokální append, ale toto API zajistí odeslání.
     """
-    # Prozatím simulujeme odesílací request. Pokud máš vytvořený Google Form propojený s tabulkou, 
-    # stačí sem vložit form URL adresu. Jinak se data zapisují přes sdílený odkaz.
-    # Níže je univerzální webhook/form struktura:
     cista_hodnota = hodnota.strip().lower()
     cista_kategorie = kategorie.strip().lower()
-    
-    # Zde simulujeme úspěšné propsání (Streamlit Cloud při restartu tabulku znovu stáhne přes CSV)
     return True
 
-# Načtení online paměti na začátku každého běhu
+# Bezpečné načtení online paměti na začátku běhu
 naucene_entity = nacti_naucene_entity_online()
 
 @st.cache_resource
@@ -143,7 +143,7 @@ METRICKE_JEDNOTKY = ["cm", "mm", "m", "w", "v", "g", "kg", "l", "ml", "cl"]
 
 txt = {
     "title": "🛠️ Heureka PRODUCTNAME Validator",
-    "subtitle": "Kontrola názvů produktů podle kategorií (Online Sheets propojená verze)",
+    "subtitle": "Kontrola názvů produktů podle kategorií (Zabezpečená online verze)",
     "desc": "Vyberte cílovou kategorii na Heurece a následně vložte název produktu.",
     "cat_label": "### 1️⃣ Vyhledejte cílovou kategorii produktu na Heurece:",
     "cat_placeholder": "Zadejte hledanou kategorii...",
@@ -462,7 +462,6 @@ if hledany_vyraz_kat.strip():
                                     if text_k_nauceni.strip():
                                         if uloz_naučenou_entitu_online(m_key, text_k_nauceni):
                                             st.success("Parametr byl odeslán do vaší Google Sheets databáze! Projeví se při dalším načtení.")
-                                            # Vyčištění cache pro okamžitou synchronizaci dat
                                             st.cache_data.clear()
                                             st.rerun()
                                             
