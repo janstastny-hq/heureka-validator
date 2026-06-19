@@ -15,22 +15,32 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- ONLINE SAMO-UČÍCÍ SE MECHANISMUS PŘES GOOGLE SHEETS ---
-# Použijeme oficiální stabilní odkaz pro publikovaný CSV export
+# --- CESTA K LOKÁLNÍMU SOUBORU S ENTITAMI ---
+JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naucene_entity.json")
 GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1rNi3o-glbbZJa_fepFaNWvbf1p2eyD7VZmYGCYT1tPk/pub?output=csv"
 
-def nacti_naucene_entity_online():
-    """Načte dříve ručně upřesněné parametry přímo z online Google Sheets tabulky s pojistkou proti zaseknutí."""
-    vychozi = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
+def nacti_naucene_entity_kombinovane():
+    """Načte entity z lokálního JSONu a sloučí je s daty z online Google Sheets tabulky."""
+    # 1. Výchozí struktura
+    pamet = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
+    
+    # 2. Načtení z lokálního JSON souboru
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                lokalni_data = json.load(f)
+                for k, v in lokalni_data.items():
+                    if k in pamet and isinstance(v, list):
+                        pamet[k].extend([str(item).strip().lower() for item in v])
+        except Exception as e:
+            st.sidebar.error(f"Chyba při načítání lokálního JSONu: {e}")
+
+    # 3. Načtení z online Google Sheets (pokud tam nějaká data jsou)
     try:
-        # Ověříme, zda Google odpovídá (s timeoutem 3 sekundy)
-        # Tím zabráníme nekonečnému načítání (zaseknutému panáčkovi)
         response = requests.get(GSHEET_CSV_URL, timeout=3)
         if response.status_code == 200:
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
-            
-            # Očistíme názvy sloupců
             df.columns = [c.strip().lower() for c in df.columns]
             
             target_kat = "kategorie" if "kategorie" in df.columns else df.columns[0]
@@ -42,7 +52,6 @@ def nacti_naucene_entity_online():
                 kat = str(row[target_kat]).strip().lower()
                 slovo = str(row[target_slovo]).strip().lower()
                 
-                # Sjednocení kategorií do našich klíčů
                 if "výrobce" in kat or "značka" in kat:
                     kat_key = "značka"
                 elif "věk" in kat or "určení" in kat:
@@ -54,25 +63,50 @@ def nacti_naucene_entity_online():
                 else:
                     kat_key = "produktová řada"
                     
-                if slovo and slovo != "nan" and slovo not in vychozi[kat_key]:
-                    vychozi[kat_key].append(slovo)
-        return vychozi
-    except Exception as e:
-        # Pokud Google neodpoví do 3 vteřin, aplikace normálně naskočí bez čekání
-        return vychozi
+                if slovo and slovo != "nan" and slovo not in pamet[kat_key]:
+                    pamet[kat_key].append(slovo)
+    except Exception:
+        pass # Pokud jsi offline nebo tabulka neodpovídá, tiše přeskočíme
 
-def uloz_naučenou_entitu_online(kategorie, hodnota):
-    """
-    Odešle nové slovo do Google Sheets. 
-    Pro zápis z cloudu bez hesel je ideální propojit Sheets s Google Formulářem 
-    a poslat data přes form URL, nebo tabulku nechat plně otevřenou pro zápis.
-    """
+    # Pročištění duplicit
+    for k in pamet:
+        pamet[k] = list(set(pamet[k]))
+        
+    return pamet
+
+def uloz_naučenou_entitu_lokalne(kategorie, hodnota):
+    """Zapíše nově naučené slovo přímo do souboru naucene_entity.json na tvůj disk."""
     cista_hodnota = hodnota.strip().lower()
     cista_kategorie = kategorie.strip().lower()
-    return True
+    
+    # Načteme stávající stav na disku
+    aktualni_json = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if k in aktualni_json:
+                        aktualni_json[k] = v
+        except:
+            pass
+            
+    # Přidáme novou hodnotu, pokud tam ještě není
+    if cista_kategorie in aktualni_json:
+        if cista_hodnota not in aktualni_json[cista_kategorie]:
+            aktualni_json[cista_kategorie].append(cista_hodnota)
+            
+    # Uložíme zpět do souboru
+    try:
+        with open(JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(aktualni_json, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        st.error(f"Chyba zápisu na disk: {e}")
+        return False
 
-# Bezpečné načtení online paměti na začátku běhu
-naucene_entity = nacti_naucene_entity_online()
+# Načtení kombinované paměti (JSON + Google Sheets)
+naucene_entity = nacti_naucene_entity_kombinovane()
 
 @st.cache_resource
 def nacti_nastroj():
@@ -80,34 +114,131 @@ def nacti_nastroj():
 
 nastroj = nacti_nastroj()
 
+# Odebíráme SK, necháváme pouze CZ a EN
 jazyk = st.radio(
     "🌐 Language / Jazyk:",
-    options=["CZ", "SK", "EN"],
+    options=["CZ", "EN"],
     horizontal=True
 )
 
+# --- DYNAMICKÝ PŘEKLADAČ ROZHRANÍ (CZ / EN) ---
+if jazyk == "EN":
+    txt = {
+        "title": "🛠️ Heureka PRODUCTNAME Validator",
+        "subtitle": "Product name check according to categories (Secured online version)",
+        "desc": "Select the target Heureka category and then insert your product name.",
+        "cat_label": "### 1️⃣ Search for the target Heureka category:",
+        "cat_placeholder": "Type category name...",
+        "cat_select_prompt": "👉 Select the exact match from found categories:",
+        "cat_rules_title": "📌 **System rules defined for the chosen category:**",
+        "structure_label": "**Defined name structure:**",
+        "example_label": "**Real example pattern:**",
+        "no_rule": "No rule is defined for this category yet.",
+        "input_label": "### 2️⃣ Insert a real PRODUCTNAME from your e-shop to audit:",
+        "input_placeholder": "Insert product name...",
+        "heading_analysis": "### 🔍 Detailed Name Audit Results",
+        "val_balast_found": "🔴 **Marketing ballast:** Remove forbidden words:",
+        "val_info_note": "ℹ️ *The tool draws its memory from local JSON and Google Sheets.*",
+        "status_found": "✅ Found",
+        "status_missing": "❌ Missing",
+        "msg_missing_general": "Specification for segment '{}' is missing in the name.",
+        "msg_missing_brand": "Manufacturer or Brand is missing in the product name.",
+        "msg_missing_power": "Power specification (W) is missing in the product name.",
+        "msg_missing_voltage": "Voltage specification (V) is missing in the product name.",
+        "msg_missing_current": "Current specification (A/mAh) is missing in the product name.",
+        "msg_missing_pct": "Percentage content expression (%) is missing.",
+        "msg_missing_weight": "Weight or quantity (e.g. 12 kg) is missing.",
+        "msg_missing_dim": "Dimension or metric value is missing.",
+        "msg_missing_code": "Product code or type designation (e.g. CP1500) is missing.",
+        "msg_missing_breed": "Breed size specification is missing.",
+        "msg_missing_volume": "Volume specification is missing.",
+        "msg_missing_pcs": "Number of pieces or package size is missing.",
+        "msg_missing_year": "Four-digit model year is missing.",
+        "msg_missing_color": "Color specification is missing.",
+        "msg_missing_type": "Generic product type name is missing.",
+        "msg_missing_comp": "Composition specification is missing.",
+        "msg_missing_wheels": "Wheel type specification is missing.",
+        "msg_missing_age": "Age designation (e.g. puppy, adult) is missing.",
+        "msg_missing_func": "Functional feed designation is missing.",
+        "msg_missing_flavor": "Detectable flavor is missing.",
+        "msg_missing_line": "Product line for segment '{}' is missing.",
+        "btn_learn": "Teach parameter online ✍️",
+        "btn_learn_input": "Enter a word from the name that represents {}:",
+        "btn_learn_submit": "Save parameter",
+        "btn_learn_success": "Parameter saved successfully! The interface is now updated.",
+        "table_title": "### 📋 Clear Summary Table of the Audit:",
+        "table_col1": "Segment", "table_col2": "Status", "table_col3": "Value / Note",
+        "cat_err": "❌ No Heureka category was found for this expression."
+    }
+else:
+    txt = {
+        "title": "🛠️ Heureka PRODUCTNAME Validator",
+        "subtitle": "Kontrola názvů produktů podle kategorií (Zabezpečená verze)",
+        "desc": "Vyberte cílovou kategorii na Heurece a následně vložte název produktu.",
+        "cat_label": "### 1️⃣ Vyhledejte cílovou kategorii produktu na Heurece:",
+        "cat_placeholder": "Zadejte hledanou kategorii...",
+        "cat_select_prompt": "👉 Vyberte přesnou shodu z nalezených kategorií:",
+        "cat_rules_title": "📌 **Systémová pravidla pro zvolenou kategorii:**",
+        "structure_label": "**Definovaná struktura názvu:**",
+        "example_label": "**Vzorový reálný příklad:**",
+        "no_rule": "Pro tuto kategorii není definováno žádné pravidlo.",
+        "input_label": "### 2️⃣ Nyní vložte reálný PRODUCTNAME z vašeho e-shopu k porovnání:",
+        "input_placeholder": "Vložte název...",
+        "heading_analysis": "### 🔍 Výsledek detailního auditu názvu",
+        "val_balast_found": "🔴 **Marketingový balast:** Odstraňte zakázaná slova:",
+        "val_info_note": "ℹ️ *Nástroj čerpá paměť z lokálního JSON souboru a Google Sheets.*",
+        "status_found": "✅ Nalezeno",
+        "status_missing": "❌ Chybí",
+        "msg_missing_general": "V názvu chybí specifikace pro segment '{}'",
+        "msg_missing_brand": "V názvu chybí výrobce či značka.",
+        "msg_missing_power": "V názvu chybí specifikace výkonu (W).",
+        "msg_missing_voltage": "V názvu chybí specifikace napětí (V).",
+        "msg_missing_current": "V názvu chybí intenzita proudové složky (A/mAh).",
+        "msg_missing_pct": "V názvu chybí procentuální vyjádření obsahu (%).",
+        "msg_missing_weight": "V názvu chybí hmotnost nebo množství (např. 12 kg).",
+        "msg_missing_dim": "V názvu chybí rozměrový nebo metrický údaj.",
+        "msg_missing_code": "V názvu chybí produktový kód nebo typové označení (např. CP1500).",
+        "msg_missing_breed": "V názvu chybí určení velikosti plemene.",
+        "msg_missing_volume": "V názvu chybí specifikace objemu.",
+        "msg_missing_pcs": "V názvu chybí počet kusů nebo balení.",
+        "msg_missing_year": "V názvu chybí čtyřmístný modelový rok.",
+        "msg_missing_color": "V názvu chybí specifikace barvy.",
+        "msg_missing_type": "V názvu chybí druhový název produktu.",
+        "msg_missing_comp": "V názvu chybí specifikace složení.",
+        "msg_missing_wheels": "V názvu chybí specifikace typu kol.",
+        "msg_missing_age": "V názvu chybí určení věku (např. puppy, adult).",
+        "msg_missing_func": "V názvu chybí funkční označení krmiva.",
+        "msg_missing_flavor": "V názvu chybí detekovatelná příchuť.",
+        "msg_missing_line": "V názvu chybí produktová řada pro segment '{}'.",
+        "btn_learn": "Naučit nástroj parametr online ✍️",
+        "btn_learn_input": "Zadejte slovo z názvu, které reprezentuje {}:",
+        "btn_learn_submit": "Uložit parametr",
+        "btn_learn_success": "Parametr byl úspěšně uložen na váš disk! Rozhraní se okamžitě přepočítalo.",
+        "table_title": "### 📋 Přehledná výsledná tabulka auditu:",
+        "table_col1": "Segment", "table_col2": "Stav", "table_col3": "Hodnota / Poznámka",
+        "cat_err": "❌ Pro tento výraz nebyla nalezena žádná Heureka kategorie."
+    }
+
 @st.cache_data
 def nacti_surova_pravidla_přimo_ze_souboru(lang):
-    nazev_souboru = "pravidla.txt" if lang != "SK" else "pravidla_sk.txt"
+    nazev_souboru = "pravidla_en.txt" if lang == "EN" else "pravidla.txt"
     cesta_k_souboru = os.path.join(os.path.dirname(os.path.abspath(__file__)), nazev_souboru)
+    if not os.path.exists(cesta_k_souboru):
+        cesta_k_souboru = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pravidla.txt")
     if not os.path.exists(cesta_k_souboru):
         return []
     try:
         with open(cesta_k_souboru, "r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     except:
-        try:
-            with open(cesta_k_souboru, "r", encoding="cp1250") as f:
-                return [line.strip() for line in f if line.strip()]
-        except:
-            return []
+        return []
 
 surova_pravidla = nacti_surova_pravidla_přimo_ze_souboru(jazyk)
 
 @st.cache_data
 def extrahuj_zname_znacky(pravidla_list):
     znacky = set()
-    zakazana_krata_slova = ["baterie", "set", "software", "pouzdro", "obal", "autopotah", "dětská", "dětský", "příkrm", "pro", "proti", "nad", "pod", "v", "se", "na", "s", "za", "kočárek", "kočík"]
+    zakazana_krata_slova = ["baterie", "set", "software", "pouzdro", "obal", "autopotah", "dětská", "dětský", "příkrm", "pro", "proti", "nad", "pod", "v", "se", "na", "s", "za", "kočárek", "kočík", "battery", "case", "cover"]
     for radek in pravidla_list:
         casti_hlavni = re.split(r'\s*[–——|]\s*|\s*-\s*', radek.strip(), maxsplit=1)
         if len(casti_hlavni) > 1:
@@ -125,39 +256,17 @@ zname_znacky_db = extrahuj_zname_znacky(surova_pravidla)
 # --- SLOVNÍKY PARAMETRŮ ---
 SLOVNIK_BAREV = ["černá", "černý", "čorná", "černé", "black", "bílá", "bílý", "bílé", "white", "červená", "červený", "červené", "red", "modrá", "modrý", "modré", "blue", "stříbrná", "stříbrný", "silver", "šedá", "šedý", "grey", "gray", "zlatá", "zlatý", "gold", "růžová", "růžový", "pink", "zelená", "zelený", "green", "žlutá", "žlutý", "yellow", "nerez", "nerezová", "chrom", "chromová", "antracit", "antracitová", "fialová", "fialový", "purple", "oranžová", "oranžový", "orange", "béžová", "béžový", "beige", "graphite", "grafit", "grafitová", "tonal"]
 SLOVNIK_KOL = ["nafukovací", "pěnová", "pěnové", "plastová", "plastové", "gelová", "gelové", "gumová", "gumové", "otočná", "pevná", "nafukovacie", "penové", "plastové", "gélové", "gumené"]
-
 SLOVNIK_VEKU = ["adult", "adults", "kitten", "kittens", "junior", "juniors", "senior", "seniors", "mature", "geriatric", "kotě", "štěně", "štěňata", "štěňat", "štěňatům", "mačiatko", "šteňa", "šteňatá", "šteňatám", "pro štěňata", "pre šteňatá", "pro dospělé", "pre dospelých"]
 PLEMENO_REGEXY = [
     r"\b(pro\s+)?velk(á|é|ých|ým)\s+plemen(a|o|ům)?\b", r"\b(pro\s+)?středn(í|ích|ím)\s+plemen(a|o|ům)?\b",
     r"\b(pro\s+)?mal(á|é|ých|ým)\s+plemen(a|o|ům)?\b", r"\b(pro\s+)?obř(í|ích)\s+plemen(a|o|ům)?\b",
-    r"\b(pro\s+)?(mini|maxi|medium|giant|small|large)\s+(breed|plemena|plemeno)?\b", r"\b(pro\s+)?(velké|malé|střední)\s+psy\b",
-    r"\b(pre\s+)?veľk(é|ých|ým)\s+plemen(á|o|ám)?\b", r"\b(pre\s+)?stredn(é|ých|ým)\s+plemen(á|o|ám)?\b"
+    r"\b(pro\s+)?(mini|maxi|medium|giant|small|large)\s+(breed|plemena|plemeno)?\b", r"\b(pro\s+)?(velké|malé|střední)\s+psy\b"
 ]
-
 SLOVNIK_OZNACENI = ["aktivní", "sterilizované", "kastrované", "venkovní", "indoor", "outdoor", "sterilised", "sensitive", "light", "hairball", "urinary", "gastrointestinal", "hypoallergenic"]
 SLOVNIK_PRICHUTI = ["kuřecí", "hovězí", "losos", "tuňák", "kachna", "krůtí", "jehněčí", "ryba", "králík", "vepřové", "zvěřina", "srnčí", "divočák", "kuře", "hovädzie", "morčacie", "jahňacie", "králik", "ryby", "kuracie", "lamb", "rice", "salmon", "chicken", "beef", "turkey"]
 POVOLENE_RADY_CHOVATELSTVI = ["breed", "nutrition", "care", "life", "fitmin", "premium", "plus", "active", "mini", "medium", "maxi", "giant", "sensitive", "hypoallergenic", "life care"]
-
 SLOVNIK_OBECNE_VATY = ["wireless", "bluetooth", "usb", "charging", "charger", "adapter", "cable", "power", "smart", "herní", "gaming", "nabíjecí", "univerzální", "universal", "originální", "original", "dětský", "dětská", "víceúčelový", "kombinovaný", "sportovní", "kočárek", "příkrm", "autosedačka", "pouzdro", "kryt", "obal", "case", "cover", "sklo", "glass", "ochranné", "náhradní", "sada", "set", "pack", "mini", "max", "pro", "plus", "standardní", "standard", "klasický", "klasická", "classic", "běžný", "běžná", "nový", "nová", "new", "top", "retro", "všestranný", "žehlicí", "prkno", "excentrická", "excentrický", "úhlová", "úhlový", "vibrační", "pásová", "pásový", "kotoučová", "kotoučový", "přímočará", "přímočarý", "pokosová", "stolní", "ruční", "bruska", "brúsky", "akumulátorová", "aku", "elektrická", "elektrický", "mokré", "suché", "šťavnaté", "krmivo", "granule", "konzerva", "kapsička", "mix", "příchuť", "plemen", "rasy", "jehněčí", "rýže", "dog", "fototiskárna", "tiskárna"]
 METRICKE_JEDNOTKY = ["cm", "mm", "m", "w", "v", "g", "kg", "l", "ml", "cl"]
-
-txt = {
-    "title": "🛠️ Heureka PRODUCTNAME Validator",
-    "subtitle": "Kontrola názvů produktů podle kategorií (Zabezpečená online verze)",
-    "desc": "Vyberte cílovou kategorii na Heurece a následně vložte název produktu.",
-    "cat_label": "### 1️⃣ Vyhledejte cílovou kategorii produktu na Heurece:",
-    "cat_placeholder": "Zadejte hledanou kategorii...",
-    "cat_select_prompt": "👉 Vyberte přesnou shodu z nalezených kategorií:",
-    "cat_rules_title": "📌 **Systémová pravidla pro zvolenou kategorii:**",
-    "structure_label": "**Definovaná struktura názvu:**",
-    "example_label": "**Vzorový reálný příklad:**",
-    "no_rule": "Pro tuto kategorii není definováno žádné pravidlo.",
-    "input_label": "### 2️⃣ Nyní vložte reálný PRODUCTNAME z vašeho e-shopu k porovnání:",
-    "input_placeholder": "Vložte název...",
-    "heading_analysis": "### 🔍 Výsledek detailního auditu názvu",
-    "val_balast_found": "🔴 **Marketingový balast:** Odstraňte zakázaná slova:",
-    "val_info_note": "ℹ️ *Nástroj čerpá živou paměť přímo z vaší Google Sheets tabulky.*"
-}
 
 st.title(txt["title"])
 st.subheader(txt["subtitle"])
@@ -211,7 +320,7 @@ if hledany_vyraz_kat.strip():
                     jmeno = jmeno_input.strip()
                     jmeno_lower = jmeno.lower()
                     
-                    balast_list = ["akce", "akčná", "sleva", "zľava", "výprodej", "výpredaj", "doprava zdarma", "poštovné zdarma", "skladem", "skladom", "novinka", "tip"]
+                    balast_list = ["akce", "akčná", "sleva", "zľava", "výprodej", "výpredaj", "doprava zdarma", "poštovné zdarma", "skladem", "skladom", "novinka", "tip", "sale", "free shipping", "action"]
                     nalezeny_balast = [b for b in balast_list if b in jmeno_lower]
                     if "!" in jmeno: nalezeny_balast.append("!")
                         
@@ -232,7 +341,7 @@ if hledany_vyraz_kat.strip():
                                 zbyvajici_text_jmena = zbyvajici_text_jmena.replace(skl, "", 1)
                                 break
                     
-                    # --- EXTRAKCE EXAKTNÍCH PARAMETRŮ ---
+                    # --- EXTRAKCE PARAMETRŮ ---
                     match_rozmer_x = re.search(r'\b\d+[\s]*(?:mm|cm|m)?[\s]*[xX✕vV][\s]*\d+[\s]*(?:mm|cm|m)?\b', zbyvajici_text_jmena)
                     val_rozmer_x = match_rozmer_x.group(0) if match_rozmer_x else None
                     if val_rozmer_x: zbyvajici_text_jmena = zbyvajici_text_jmena.replace(val_rozmer_x, "", 1)
@@ -283,7 +392,7 @@ if hledany_vyraz_kat.strip():
                                 zbyvajici_text_jmena = zbyvajici_text_jmena.replace(val_barva, "", 1)
                                 break
                     
-                    # DETEKCE ZNAČKY S ONLINE PAMĚTÍ
+                    # DETEKCE ZNAČKY S PAMĚTÍ
                     val_znacka = None
                     for znacka in list(zname_znacky_db) + naucene_entity.get("značka", []):
                         if len(znacka) > 2:
@@ -302,7 +411,7 @@ if hledany_vyraz_kat.strip():
                                 break
 
                     st.write("")
-                    st.markdown("### 📊 Audit složek názvu podle pravidla Heureky:")
+                    st.markdown(f"### {txt['heading_analysis']}")
                     
                     data_pro_tabulku = []
                     
@@ -311,7 +420,7 @@ if hledany_vyraz_kat.strip():
                         seg_lower = cisty_nazev_seg.lower()
                         
                         nalezeny_obsah = None
-                        typ_chyby_msg = f"V názvu chybí specifikace pro segment '{cisty_nazev_seg}'"
+                        typ_chyby_msg = txt["msg_missing_general"].format(cisty_nazev_seg)
                         
                         if "výrobce" in seg_lower or "značka" in seg_lower: m_key = "značka"
                         elif "věk" in seg_lower or "určení" in seg_lower: m_key = "určení"
@@ -331,30 +440,30 @@ if hledany_vyraz_kat.strip():
                         if not nalezeny_obsah:
                             if "výrobce" in seg_lower or "značka" in seg_lower:
                                 if val_znacka: nalezeny_obsah = val_znacka
-                                else: typ_chyby_msg = "V názvu chybí výrobce či značka."
+                                else: typ_chyby_msg = txt["msg_missing_brand"]
                             elif "výkon" in seg_lower:
                                 if val_vykon: nalezeny_obsah = val_vykon
-                                else: typ_chyby_msg = "V názvu chybí specifikace výkonu (W)."
+                                else: typ_chyby_msg = txt["msg_missing_power"]
                             elif "napětí" in seg_lower:
                                 if val_napeti: nalezeny_obsah = val_napeti
-                                else: typ_chyby_msg = "V názvu chybí specifikace napětí (V)."
+                                else: typ_chyby_msg = txt["msg_missing_voltage"]
                             elif "proud" in seg_lower:
                                 if val_proud: nalezeny_obsah = val_proud
-                                else: typ_chyby_msg = "V názvu chybí intenzita proudové složky (A/mAh)."
+                                else: typ_chyby_msg = txt["msg_missing_current"]
                             elif "alkohol" in seg_lower or "%" in seg_lower:
                                 if val_procenta: nalezeny_obsah = val_procenta
-                                else: typ_chyby_msg = "V názvu chybí procentuální vyjádření obsahu (%)."
+                                else: typ_chyby_msg = txt["msg_missing_pct"]
                             elif "množství" in seg_lower or "hmotnost" in seg_lower or "váha" in seg_lower or "gramáž" in seg_lower:
                                 hodnota_vahy_baleni = val_vahu if val_vahu else val_kusy
                                 if hodnota_vahy_baleni: nalezeny_obsah = hodnota_vahy_baleni
-                                else: typ_chyby_msg = "V názvu chybí hmotnost nebo množství (např. 12 kg)."
+                                else: typ_chyby_msg = txt["msg_missing_weight"]
                             elif "rozměr" in seg_lower or "šířka" in seg_lower or "délka" in seg_lower or "průměr" in seg_lower:
                                 hodnota_rozmeru = val_rozmer_x if val_rozmer_x else val_delka
                                 if hodnota_rozmeru and not ("složení" in seg_lower): nalezeny_obsah = hodnota_rozmeru
-                                else: typ_chyby_msg = "V názvu chybí rozměrový nebo metrický údaj."
+                                else: typ_chyby_msg = txt["msg_missing_dim"]
                             elif "číslo" in seg_lower or "kód" in seg_lower or "iso" in seg_lower or "typové označení" in seg_lower or "typové" in seg_lower:
                                 if val_kod: nalezeny_obsah = val_kod
-                                else: typ_chyby_msg = "V názvu chybí produktový kód nebo typové označení (např. CP1500)."
+                                else: typ_chyby_msg = txt["msg_missing_code"]
                             elif "velikost" in seg_lower or "velikost plemene" in seg_lower or "plemeno" in seg_lower:
                                 nalezena_vel = None
                                 for p_regex in PLEMENO_REGEXY:
@@ -363,28 +472,28 @@ if hledany_vyraz_kat.strip():
                                 if nalezena_vel:
                                     nalezeny_obsah = nalezena_vel
                                     zbyvajici_text_jmena = zbyvajici_text_jmena.replace(nalezena_vel, "", 1)
-                                else: typ_chyby_msg = "V názvu chybí určení velikosti plemene."
+                                else: typ_chyby_msg = txt["msg_missing_breed"]
                             elif "objem" in seg_lower:
                                 if val_delka: nalezeny_obsah = val_delka
-                                else: typ_chyby_msg = "V názvu chybí specifikace objemu."
+                                else: typ_chyby_msg = txt["msg_missing_volume"]
                             elif "kusů" in seg_lower or "balení" in seg_lower or "licenc" in seg_lower or "porcí" in seg_lower:
                                 if val_kusy: nalezeny_obsah = val_kusy
-                                else: typ_chyby_msg = "V názvu chybí počet kusů nebo balení."
+                                else: typ_chyby_msg = txt["msg_missing_pcs"]
                             elif "rok" in seg_lower or "ročník" in seg_lower:
                                 if val_rok: nalezeny_obsah = val_rok
-                                else: typ_chyby_msg = "V názvu chybí čtyřmístný modelový rok."
+                                else: typ_chyby_msg = txt["msg_missing_year"]
                             elif "barva" in seg_lower or "odstín" in seg_lower or "varianta" in seg_lower:
                                 if val_barva: nalezeny_obsah = val_barva
-                                else: typ_chyby_msg = "V názvu chybí specifikace barvy."
+                                else: typ_chyby_msg = txt["msg_missing_color"]
                             elif "název" in seg_lower or "druh" in seg_lower or "podrobnější" in seg_lower:
-                                if ma_obecne_slovo_kategorie: nalezeny_obsah = "Určeno názvem kategorie"
-                                else: typ_chyby_msg = "V názvu chybí druhový název produktu."
+                                if ma_obecne_slovo_kategorie: nalezeny_obsah = "Určeno názvem kategorie" if jazyk == "CZ" else "Determined by category name"
+                                else: typ_chyby_msg = txt["msg_missing_type"]
                             elif "složení" in seg_lower:
                                 if val_rozmer_x: nalezeny_obsah = val_rozmer_x
-                                else: typ_chyby_msg = "V názvu chybí specifikace složení."
+                                else: typ_chyby_msg = txt["msg_missing_comp"]
                             else:
                                 slova_zbytkova = [w.strip("!,.:-–—()+ ") for w in zbyvajici_text_jmena.split() if w.strip()]
-                                slova_zbytkova = [w for w in slova_zbytkova if w.lower() not in ["pro", "sedící", "děti", "a", "s", "v", "kočárek", "kočík"]]
+                                slova_zbytkova = [w for w in slova_zbytkova if w.lower() not in ["pro", "sedící", "děti", "a", "s", "v", "kočárek", "kočík", "for", "with"]]
                                 
                                 if "kol" in seg_lower:
                                     nalezene_kolo = None
@@ -393,7 +502,7 @@ if hledany_vyraz_kat.strip():
                                     if nalezene_kolo:
                                         nalezeny_obsah = nalezene_kolo
                                         zbyvajici_text_jmena = zbyvajici_text_jmena.replace(nalezene_kolo, "", 1)
-                                    else: typ_chyby_msg = "V názvu chybí specifikace typu kol."
+                                    else: typ_chyby_msg = txt["msg_missing_wheels"]
                                 elif "věk" in seg_lower or "určení" in seg_lower:
                                     zbyvajici_text_lower = zbyvajici_text_jmena.lower()
                                     nalezeny_vek = None
@@ -404,7 +513,7 @@ if hledany_vyraz_kat.strip():
                                     if nalezeny_vek:
                                         nalezeny_obsah = nalezeny_vek
                                         zbyvajici_text_jmena = zbyvajici_text_jmena.replace(nalezeny_vek, "", 1)
-                                    else: typ_chyby_msg = "V názvu chybí určení věku (např. puppy, adult)."
+                                    else: typ_chyby_msg = txt["msg_missing_age"]
                                 elif "označení" in seg_lower or "specifikace" in seg_lower:
                                     nalezene_ozn = None
                                     for o_word in slova_zbytkova:
@@ -412,7 +521,7 @@ if hledany_vyraz_kat.strip():
                                     if nalezene_ozn:
                                         nalezeny_obsah = nalezene_ozn
                                         zbyvajici_text_jmena = zbyvajici_text_jmena.replace(nalezene_ozn, "", 1)
-                                    else: typ_chyby_msg = "V názvu chybí funkční označení krmiva."
+                                    else: typ_chyby_msg = txt["msg_missing_func"]
                                 elif "příchuť" in seg_lower or "príchuť" in seg_lower:
                                     zbyvajici_text_lower = zbyvajici_text_jmena.lower()
                                     nalezena_prichut = None
@@ -423,7 +532,7 @@ if hledany_vyraz_kat.strip():
                                     if nalezena_prichut:
                                         nalezeny_obsah = nalezena_prichut
                                         zbyvajici_text_jmena = zbyvajici_text_jmena.replace(nalezena_prichut, "", 1)
-                                    else: typ_chyby_msg = "V názvu chybí detekovatelná příchuť."
+                                    else: typ_chyby_msg = txt["msg_missing_flavor"]
                                 else:
                                     regularni_slovo = None
                                     kandidati = [w for w in slova_zbytkova if w.lower() not in SLOVNIK_OBECNE_VATY and w.lower() not in METRICKE_JEDNOTKY and w.lower() not in SLOVNIK_VEKU and w.lower() not in SLOVNIK_OZNACENI and w.lower() not in SLOVNIK_PRICHUTI]
@@ -443,30 +552,29 @@ if hledany_vyraz_kat.strip():
                                     if regularni_slovo:
                                         nalezeny_obsah = regularni_slovo
                                         for slot in uceleny_blok: zbyvajici_text_jmena = zbyvajici_text_jmena.replace(slot, "", 1)
-                                    else: typ_chyby_msg = f"V názvu chybí produktová řada pro segment '{cisty_nazev_seg}'."
+                                    else: typ_chyby_msg = txt["msg_missing_line"].format(cisty_nazev_seg)
                         
                         if nalezeny_obsah:
-                            st.success(f"**{cisty_nazev_seg}: Nalezeno**\n\n➔ `{nalezeny_obsah}`")
-                            data_pro_tabulku.append({"Segment": cisty_nazev_seg, "Stav": "✅ Nalezeno", "Hodnota / Poznámka": nalezeny_obsah})
+                            st.success(f"**{cisty_nazev_seg}: {txt['status_found']}**\n\n➔ `{nalezeny_obsah}`")
+                            data_pro_tabulku.append({txt["table_col1"]: cisty_nazev_seg, txt["table_col2"]: txt["status_found"], txt["table_col3"]: nalezeny_obsah})
                         else:
-                            st.error(f"**{cisty_nazev_seg}: Chybí**\n\n➔ *❌ {typ_chyby_msg}*")
-                            data_pro_tabulku.append({"Segment": cisty_nazev_seg, "Stav": "❌ Chybí", "Hodnota / Poznámka": typ_chyby_msg})
+                            st.error(f"**{cisty_nazev_seg}: {txt['status_missing']}**\n\n➔ *{typ_chyby_msg}*")
+                            data_pro_tabulku.append({txt["table_col1"]: cisty_nazev_seg, txt["table_col2"]: txt["status_missing"], txt["table_col3"]: typ_chyby_msg})
                             
-                            # Interaktivní Override mechanismus
-                            with st.expander(f"Naučit nástroj parametr online ✍️"):
+                            with st.expander(txt["btn_learn"]):
                                 text_k_nauceni = st.text_input(
-                                    f"Zadejte slovo z názvu, které reprezentuje {cisty_nazev_seg}:", 
+                                    txt["btn_learn_input"].format(cisty_nazev_seg), 
                                     key=f"input_override_{cisty_nazev_seg}_{seg}"
                                 )
-                                if st.button(f"Odeslat do Google Sheets", key=f"btn_override_{cisty_nazev_seg}_{seg}"):
+                                if st.button(txt["btn_learn_submit"], key=f"btn_override_{cisty_nazev_seg}_{seg}"):
                                     if text_k_nauceni.strip():
-                                        if uloz_naučenou_entitu_online(m_key, text_k_nauceni):
-                                            st.success("Parametr byl odeslán do vaší Google Sheets databáze! Projeví se při dalším načtení.")
+                                        if uloz_naučenou_entitu_lokalne(m_key, text_k_nauceni):
+                                            st.success(txt["btn_learn_success"])
                                             st.cache_data.clear()
                                             st.rerun()
                                             
                     st.write("")
-                    st.markdown("### 📋 Přehledná výsledná tabulka auditu:")
+                    st.markdown(txt["table_title"])
                     df_vysledky = pd.DataFrame(data_pro_tabulku)
                     st.dataframe(df_vysledky, use_container_width=True, hide_index=True)
                                             
@@ -475,4 +583,4 @@ if hledany_vyraz_kat.strip():
             else:
                 st.error(txt["no_rule"])
     else:
-        st.error("❌ Pro tento výraz nebyla nalezena žádná Heureka kategorie.")
+        st.error(txt["cat_err"])
