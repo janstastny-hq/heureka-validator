@@ -16,13 +16,12 @@ st.set_page_config(
 )
 
 # --- KONFIGURACE PROPOJENÍ NA GOOGLE FORMS & SHEETS ---
-# Tvůj předvyplněný Google Form pro zápis dat
-FORM_SUBMIT_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdx_14tJk8-OKVj4z5LzywFWu9AYxNgWBe6G3JybgPHzQb-0g/formResponse"
+# Tvůj předvyplněný Google Form pro zápis dat s upraveným parametrem pro natvrdo odeslání
+FORM_SUBMIT_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdx_14tJk8-OKVj4z5LzywFWu9AYxNgWBe6G3JybgPHzQb-0g/formResponse?submit=Submit"
 ENTRY_SLOVO = "entry.58576357"
 ENTRY_KAT = "entry.985762954"
 
 # Odkaz na CSV export tvé Google tabulky (pro čtení naučených entit)
-# POZOR: Ujisti se, že máš v Google Sheets celou tabulku (nebo list Form Responses) publikovanou jako CSV pro web!
 GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1rNi3o-glbbZJa_fepFaNWvbf1p2eyD7VZmYGCYT1tPk/pub?output=csv"
 
 def nacti_naucene_entity_online():
@@ -66,7 +65,7 @@ def nacti_naucene_entity_online():
         return vychozi
 
 def uloz_naučenou_entitu_online(kategorie, hodnota):
-    """Odešle nové slovo na pozadí přes Google Form rovnou do tvé Google tabulky."""
+    """Odešle nové slovo na pozadí přes Google Form rovnou do tvé Google tabulky s diagnostikou chyb."""
     cista_hodnota = hodnota.strip().lower()
     cista_kategorie = kategorie.strip().lower()
     
@@ -79,8 +78,14 @@ def uloz_naučenou_entitu_online(kategorie, hodnota):
     try:
         # Simulace odeslání formuláře na pozadí
         res = requests.post(FORM_SUBMIT_URL, data=form_data, timeout=4)
+        
+        # Pokud Google vrátí cokoli jiného než kód 200 (Úspěch), vypíšeme to červeně uživateli
+        if res.status_code != 200:
+            st.error(f"⚠️ Google Form odmítl zápis (Chybový status: {res.status_code}).")
+            
         return res.status_code == 200
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ Chyba sítě při odesílání: {e}")
         return False
 
 # Bezpečné načtení online paměti z Google Sheets při startu
@@ -369,7 +374,7 @@ if hledany_vyraz_kat.strip():
                                 zbyvajici_text_jmena = zbyvajici_text_jmena.replace(val_barva, "", 1)
                                 break
                     
-                    # DETEKCE ZNAČKY S PAMĚTÍ
+                    # DETEKCE ZNAČKY S ONLINE PAMĚTÍ
                     val_znacka = None
                     for znacka in list(zname_znacky_db) + naucene_entity.get("značka", []):
                         if len(znacka) > 2:
