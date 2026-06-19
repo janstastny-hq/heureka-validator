@@ -16,8 +16,8 @@ st.set_page_config(
 )
 
 # --- KONFIGURACE PROPOJENÍ NA GOOGLE FORMS & SHEETS ---
-# Tvůj předvyplněný Google Form pro zápis dat s upraveným parametrem pro natvrdo odeslání
-FORM_SUBMIT_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdx_14tJk8-OKVj4z5LzywFWu9AYxNgWBe6G3JybgPHzQb-0g/formResponse?submit=Submit"
+# Opravená URL adresa bez parametru ?submit=Submit, aby Google nehlásil chybu 401
+FORM_SUBMIT_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdx_14tJk8-OKVj4z5LzywFWu9AYxNgWBe6G3JybgPHzQb-0g/formResponse"
 ENTRY_SLOVO = "entry.58576357"
 ENTRY_KAT = "entry.985762954"
 
