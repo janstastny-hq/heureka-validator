@@ -15,36 +15,31 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- CESTA K LOKÁLNÍMU SOUBORU S ENTITAMI ---
-JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naucene_entity.json")
+# --- KONFIGURACE PROPOJENÍ NA GOOGLE FORMS & SHEETS ---
+# Tvůj předvyplněný Google Form pro zápis dat
+FORM_SUBMIT_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdx_14tJk8-OKVj4z5LzywFWu9AYxNgWBe6G3JybgPHzQb-0g/formResponse"
+ENTRY_SLOVO = "entry.58576357"
+ENTRY_KAT = "entry.985762954"
+
+# Odkaz na CSV export tvé Google tabulky (pro čtení naučených entit)
+# POZOR: Ujisti se, že máš v Google Sheets celou tabulku (nebo list Form Responses) publikovanou jako CSV pro web!
 GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1rNi3o-glbbZJa_fepFaNWvbf1p2eyD7VZmYGCYT1tPk/pub?output=csv"
 
-def nacti_naucene_entity_kombinovane():
-    """Načte entity z lokálního JSONu a sloučí je s daty z online Google Sheets tabulky."""
-    # 1. Výchozí struktura
-    pamet = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
-    
-    # 2. Načtení z lokálního JSON souboru
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r", encoding="utf-8") as f:
-                lokalni_data = json.load(f)
-                for k, v in lokalni_data.items():
-                    if k in pamet and isinstance(v, list):
-                        pamet[k].extend([str(item).strip().lower() for item in v])
-        except Exception as e:
-            st.sidebar.error(f"Chyba při načítání lokálního JSONu: {e}")
-
-    # 3. Načtení z online Google Sheets (pokud tam nějaká data jsou)
+def nacti_naucene_entity_online():
+    """Načte dříve schválená slova přímo z online Google Sheets tabulky."""
+    vychozi = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
     try:
         response = requests.get(GSHEET_CSV_URL, timeout=3)
         if response.status_code == 200:
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
+            
+            # Normalizace názvů sloupců (odstranění mezer, malá písmena)
             df.columns = [c.strip().lower() for c in df.columns]
             
-            target_kat = "kategorie" if "kategorie" in df.columns else df.columns[0]
-            target_slovo = "slovo" if "slovo" in df.columns else df.columns[1]
+            # Dynamické vyhledání sloupců podle tvé nové tabulky (Slovo, Kategorie)
+            target_kat = "kategorie" if "kategorie" in df.columns else (df.columns[2] if len(df.columns) > 2 else df.columns[0])
+            target_slovo = "slovo" if "slovo" in df.columns else (df.columns[1] if len(df.columns) > 1 else df.columns[0])
 
             for _, row in df.iterrows():
                 if pd.isna(row[target_kat]) or pd.isna(row[target_slovo]):
@@ -52,6 +47,7 @@ def nacti_naucene_entity_kombinovane():
                 kat = str(row[target_kat]).strip().lower()
                 slovo = str(row[target_slovo]).strip().lower()
                 
+                # Zařazení do interních šuplíků podle klíčových slov
                 if "výrobce" in kat or "značka" in kat:
                     kat_key = "značka"
                 elif "věk" in kat or "určení" in kat:
@@ -63,50 +59,32 @@ def nacti_naucene_entity_kombinovane():
                 else:
                     kat_key = "produktová řada"
                     
-                if slovo and slovo != "nan" and slovo not in pamet[kat_key]:
-                    pamet[kat_key].append(slovo)
+                if slovo and slovo != "nan" and slovo not in vychozi[kat_key]:
+                    vychozi[kat_key].append(slovo)
+        return vychozi
     except Exception:
-        pass # Pokud jsi offline nebo tabulka neodpovídá, tiše přeskočíme
+        return vychozi
 
-    # Pročištění duplicit
-    for k in pamet:
-        pamet[k] = list(set(pamet[k]))
-        
-    return pamet
-
-def uloz_naučenou_entitu_lokalne(kategorie, hodnota):
-    """Zapíše nově naučené slovo přímo do souboru naucene_entity.json na tvůj disk."""
+def uloz_naučenou_entitu_online(kategorie, hodnota):
+    """Odešle nové slovo na pozadí přes Google Form rovnou do tvé Google tabulky."""
     cista_hodnota = hodnota.strip().lower()
     cista_kategorie = kategorie.strip().lower()
     
-    # Načteme stávající stav na disku
-    aktualni_json = {"značka": [], "určení": [], "plemeno": [], "příchuť": [], "produktová řada": []}
-    if os.path.exists(JSON_PATH):
-        try:
-            with open(JSON_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for k, v in data.items():
-                    if k in aktualni_json:
-                        aktualni_json[k] = v
-        except:
-            pass
-            
-    # Přidáme novou hodnotu, pokud tam ještě není
-    if cista_kategorie in aktualni_json:
-        if cista_hodnota not in aktualni_json[cista_kategorie]:
-            aktualni_json[cista_kategorie].append(cista_hodnota)
-            
-    # Uložíme zpět do souboru
+    # Příprava dat pro Google Form request
+    form_data = {
+        ENTRY_SLOVO: cista_hodnota,
+        ENTRY_KAT: cista_kategorie
+    }
+    
     try:
-        with open(JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(aktualni_json, f, ensure_ascii=False, indent=4)
-        return True
-    except Exception as e:
-        st.error(f"Chyba zápisu na disk: {e}")
+        # Simulace odeslání formuláře na pozadí
+        res = requests.post(FORM_SUBMIT_URL, data=form_data, timeout=4)
+        return res.status_code == 200
+    except Exception:
         return False
 
-# Načtení kombinované paměti (JSON + Google Sheets)
-naucene_entity = nacti_naucene_entity_kombinovane()
+# Bezpečné načtení online paměti z Google Sheets při startu
+naucene_entity = nacti_naucene_entity_online()
 
 @st.cache_resource
 def nacti_nastroj():
@@ -114,7 +92,6 @@ def nacti_nastroj():
 
 nastroj = nacti_nastroj()
 
-# Odebíráme SK, necháváme pouze CZ a EN
 jazyk = st.radio(
     "🌐 Language / Jazyk:",
     options=["CZ", "EN"],
@@ -138,7 +115,7 @@ if jazyk == "EN":
         "input_placeholder": "Insert product name...",
         "heading_analysis": "### 🔍 Detailed Name Audit Results",
         "val_balast_found": "🔴 **Marketing ballast:** Remove forbidden words:",
-        "val_info_note": "ℹ️ *The tool draws its memory from local JSON and Google Sheets.*",
+        "val_info_note": "ℹ️ *The tool draws its live memory directly from your Google Sheets.*",
         "status_found": "✅ Found",
         "status_missing": "❌ Missing",
         "msg_missing_general": "Specification for segment '{}' is missing in the name.",
@@ -164,8 +141,8 @@ if jazyk == "EN":
         "msg_missing_line": "Product line for segment '{}' is missing.",
         "btn_learn": "Teach parameter online ✍️",
         "btn_learn_input": "Enter a word from the name that represents {}:",
-        "btn_learn_submit": "Save parameter",
-        "btn_learn_success": "Parameter saved successfully! The interface is now updated.",
+        "btn_learn_submit": "Send online to Google Sheets",
+        "btn_learn_success": "Parameter sent to your Google Sheets database! It will apply on next load.",
         "table_title": "### 📋 Clear Summary Table of the Audit:",
         "table_col1": "Segment", "table_col2": "Status", "table_col3": "Value / Note",
         "cat_err": "❌ No Heureka category was found for this expression."
@@ -173,7 +150,7 @@ if jazyk == "EN":
 else:
     txt = {
         "title": "🛠️ Heureka PRODUCTNAME Validator",
-        "subtitle": "Kontrola názvů produktů podle kategorií (Zabezpečená verze)",
+        "subtitle": "Kontrola názvů produktů podle kategorií (Propojeno s Google Sheets)",
         "desc": "Vyberte cílovou kategorii na Heurece a následně vložte název produktu.",
         "cat_label": "### 1️⃣ Vyhledejte cílovou kategorii produktu na Heurece:",
         "cat_placeholder": "Zadejte hledanou kategorii...",
@@ -186,7 +163,7 @@ else:
         "input_placeholder": "Vložte název...",
         "heading_analysis": "### 🔍 Výsledek detailního auditu názvu",
         "val_balast_found": "🔴 **Marketingový balast:** Odstraňte zakázaná slova:",
-        "val_info_note": "ℹ️ *Nástroj čerpá paměť z lokálního JSON souboru a Google Sheets.*",
+        "val_info_note": "ℹ️ *Nástroj čerpá živou paměť přímo z vaší Google Sheets tabulky.*",
         "status_found": "✅ Nalezeno",
         "status_missing": "❌ Chybí",
         "msg_missing_general": "V názvu chybí specifikace pro segment '{}'",
@@ -212,8 +189,8 @@ else:
         "msg_missing_line": "V názvu chybí produktová řada pro segment '{}'.",
         "btn_learn": "Naučit nástroj parametr online ✍️",
         "btn_learn_input": "Zadejte slovo z názvu, které reprezentuje {}:",
-        "btn_learn_submit": "Uložit parametr",
-        "btn_learn_success": "Parametr byl úspěšně uložen na váš disk! Rozhraní se okamžitě přepočítalo.",
+        "btn_learn_submit": "Odeslat do Google Sheets",
+        "btn_learn_success": "Parametr byl odeslán do vaší Google Sheets databáze! Projeví se při dalším načtení.",
         "table_title": "### 📋 Přehledná výsledná tabulka auditu:",
         "table_col1": "Segment", "table_col2": "Stav", "table_col3": "Hodnota / Poznámka",
         "cat_err": "❌ Pro tento výraz nebyla nalezena žádná Heureka kategorie."
@@ -568,7 +545,7 @@ if hledany_vyraz_kat.strip():
                                 )
                                 if st.button(txt["btn_learn_submit"], key=f"btn_override_{cisty_nazev_seg}_{seg}"):
                                     if text_k_nauceni.strip():
-                                        if uloz_naučenou_entitu_lokalne(m_key, text_k_nauceni):
+                                        if uloz_naučenou_entitu_online(m_key, text_k_nauceni):
                                             st.success(txt["btn_learn_success"])
                                             st.cache_data.clear()
                                             st.rerun()
